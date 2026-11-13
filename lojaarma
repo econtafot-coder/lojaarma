@@ -1,0 +1,373 @@
+-- Loja GUI | Delta Executor (versao rapida)
+-- Detecta ProximityPrompts com nome "Loja de armas" e abre pelo botao do GUI.
+-- Para outro alvo, mude a linha ALVO abaixo.
+
+local ALVO = "loja de armas"   -- texto procurado (minusculo)
+
+-- Ajustes de velocidade (segundos)
+local ESPERA_CHEGAR = 0.06   -- tempo no prompt antes de acionar (menor = mais rapido; se falhar, suba p/ 0.1)
+local TEMPO_MAXIMO  = 0.8    -- limite de espera pela GUI do jogo abrir
+local VOLTAR        = true   -- volta pro lugar original depois de abrir
+
+local Players = game:GetService("Players")
+local UIS = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local lp = Players.LocalPlayer
+
+-- Remove GUI antigo se executar de novo
+local function getParentGui()
+    local ok, gui = pcall(function() return (gethui and gethui()) or game:GetService("CoreGui") end)
+    if ok and gui then return gui end
+    return lp:WaitForChild("PlayerGui")
+end
+
+local parentGui = getParentGui()
+local old = parentGui:FindFirstChild("LojaGuiDelta")
+if old then old:Destroy() end
+
+---------------------------------------------------------------------
+-- Deteccao dos ProximityPrompts
+---------------------------------------------------------------------
+local function contem(txt)
+    return type(txt) == "string" and txt:lower():find(ALVO, 1, true) ~= nil
+end
+
+local function combina(p)
+    if contem(p.Name) or contem(p.ObjectText) or contem(p.ActionText) then return true end
+    local par = p.Parent
+    for _ = 1, 3 do
+        if not par then break end
+        if contem(par.Name) then return true end
+        par = par.Parent
+    end
+    return false
+end
+
+local function achar()
+    local lista = {}
+    for _, d in ipairs(workspace:GetDescendants()) do
+        if d:IsA("ProximityPrompt") and combina(d) then
+            table.insert(lista, d)
+        end
+    end
+    return lista
+end
+
+local function posicaoDe(p)
+    local par = p.Parent
+    if par and par:IsA("Attachment") then return par.WorldPosition end
+    if par and par:IsA("BasePart") then return par.Position end
+    if par and par:IsA("Model") then return par:GetPivot().Position end
+    return nil
+end
+
+---------------------------------------------------------------------
+-- Deteccao da GUI do jogo abrindo
+---------------------------------------------------------------------
+local function guisAtivas()
+    local set = {}
+    local pg = lp:FindFirstChild("PlayerGui")
+    if pg then
+        for _, g in ipairs(pg:GetChildren()) do
+            if g:IsA("ScreenGui") and g.Enabled then set[g] = true end
+        end
+    end
+    return set
+end
+
+local function guiNovaAbriu(antes)
+    local pg = lp:FindFirstChild("PlayerGui")
+    if not pg then return false end
+    for _, g in ipairs(pg:GetChildren()) do
+        if g:IsA("ScreenGui") and g.Enabled and not antes[g] and g.Name ~= "LojaGuiDelta" then
+            return true
+        end
+    end
+    return false
+end
+
+---------------------------------------------------------------------
+-- Abrir (teleporte rapido + prompt volta ao normal)
+---------------------------------------------------------------------
+local abrindo = false
+
+local function abrir(p)
+    if abrindo then return end
+    abrindo = true
+
+    -- guarda os valores originais do prompt pra restaurar depois
+    local orig = {
+        Enabled = p.Enabled,
+        HoldDuration = p.HoldDuration,
+        RequiresLineOfSight = p.RequiresLineOfSight,
+        MaxActivationDistance = p.MaxActivationDistance,
+    }
+
+    local function restaurar()
+        pcall(function()
+            p.MaxActivationDistance = orig.MaxActivationDistance
+            p.HoldDuration = orig.HoldDuration
+            p.RequiresLineOfSight = orig.RequiresLineOfSight
+            p.Enabled = orig.Enabled
+        end)
+    end
+
+    pcall(function()
+        p.Enabled = true
+        p.HoldDuration = 0
+        p.RequiresLineOfSight = false
+        p.MaxActivationDistance = 50   -- suficiente depois do teleporte (antes era 9e9 = prompt gigante)
+    end)
+
+    local pos = posicaoDe(p)
+    local char = lp.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    local voltarCF = hrp and hrp.CFrame
+    local antes = guisAtivas()
+
+    -- teleporta direto pro prompt
+    if pos and hrp then
+        hrp.CFrame = CFrame.new(pos + Vector3.new(0, 3, 0))
+        task.wait(ESPERA_CHEGAR)
+    end
+
+    -- aciona o prompt a cada frame ate a GUI do jogo abrir (ou estourar o tempo)
+    local inicio = os.clock()
+    local usouFire = false
+    while os.clock() - inicio < TEMPO_MAXIMO do
+        if fireproximityprompt then
+            usouFire = pcall(fireproximityprompt, p) or usouFire
+        else
+            pcall(function()
+                p:InputHoldBegin()
+                p:InputHoldEnd()
+            end)
+        end
+        RunService.Heartbeat:Wait()
+        if guiNovaAbriu(antes) then break end
+        -- se a GUI nao for um ScreenGui novo, 2 acionamentos ja bastam
+        if os.clock() - inicio > 0.25 and usouFire then break end
+    end
+
+    -- prompt volta ao tamanho/alcance normal na hora
+    restaurar()
+
+    -- volta pro lugar original
+    if VOLTAR and voltarCF and hrp and hrp.Parent then
+        task.wait(0.05)
+        hrp.CFrame = voltarCF
+    end
+    abrindo = false
+end
+
+local function irAte(p)
+    local pos = posicaoDe(p)
+    local char = lp.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if pos and hrp then
+        hrp.CFrame = CFrame.new(pos + Vector3.new(0, 3, 0))
+    end
+end
+
+---------------------------------------------------------------------
+-- GUI
+---------------------------------------------------------------------
+local gui = Instance.new("ScreenGui")
+gui.Name = "LojaGuiDelta"
+gui.ResetOnSpawn = false
+gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+gui.Parent = parentGui
+
+local main = Instance.new("Frame")
+main.Size = UDim2.new(0, 210, 0, 150)
+main.Position = UDim2.new(0, 20, 0.3, 0)
+main.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
+main.BorderSizePixel = 0
+main.Active = true
+main.Parent = gui
+Instance.new("UICorner", main).CornerRadius = UDim.new(0, 8)
+
+local titulo = Instance.new("TextLabel")
+titulo.Size = UDim2.new(1, 0, 0, 26)
+titulo.BackgroundColor3 = Color3.fromRGB(40, 110, 70)
+titulo.BorderSizePixel = 0
+titulo.Text = "  Loja GUI"
+titulo.TextColor3 = Color3.new(1, 1, 1)
+titulo.Font = Enum.Font.GothamBold
+titulo.TextSize = 13
+titulo.TextXAlignment = Enum.TextXAlignment.Left
+titulo.Active = true
+titulo.Parent = main
+Instance.new("UICorner", titulo).CornerRadius = UDim.new(0, 8)
+
+local btnMin = Instance.new("TextButton")
+btnMin.Size = UDim2.new(0, 26, 0, 26)
+btnMin.Position = UDim2.new(1, -26, 0, 0)
+btnMin.BackgroundTransparency = 1
+btnMin.Text = "-"
+btnMin.TextColor3 = Color3.new(1, 1, 1)
+btnMin.Font = Enum.Font.GothamBold
+btnMin.TextSize = 20
+btnMin.Parent = main
+
+local status = Instance.new("TextLabel")
+status.Size = UDim2.new(1, -12, 0, 16)
+status.Position = UDim2.new(0, 6, 0, 30)
+status.BackgroundTransparency = 1
+status.Text = "Procurando..."
+status.TextColor3 = Color3.fromRGB(200, 200, 200)
+status.Font = Enum.Font.Gotham
+status.TextSize = 11
+status.TextXAlignment = Enum.TextXAlignment.Left
+status.Parent = main
+
+local lista = Instance.new("ScrollingFrame")
+lista.Size = UDim2.new(1, -12, 1, -82)
+lista.Position = UDim2.new(0, 6, 0, 48)
+lista.BackgroundColor3 = Color3.fromRGB(35, 35, 42)
+lista.BorderSizePixel = 0
+lista.ScrollBarThickness = 3
+lista.CanvasSize = UDim2.new(0, 0, 0, 0)
+lista.AutomaticCanvasSize = Enum.AutomaticSize.Y
+lista.Parent = main
+Instance.new("UICorner", lista).CornerRadius = UDim.new(0, 6)
+local layout = Instance.new("UIListLayout", lista)
+layout.Padding = UDim.new(0, 4)
+local pad = Instance.new("UIPadding", lista)
+pad.PaddingTop = UDim.new(0, 4)
+pad.PaddingLeft = UDim.new(0, 4)
+pad.PaddingRight = UDim.new(0, 4)
+
+local btnAtualizar = Instance.new("TextButton")
+btnAtualizar.Size = UDim2.new(1, -12, 0, 24)
+btnAtualizar.Position = UDim2.new(0, 6, 1, -30)
+btnAtualizar.BackgroundColor3 = Color3.fromRGB(55, 55, 70)
+btnAtualizar.BorderSizePixel = 0
+btnAtualizar.Text = "Atualizar"
+btnAtualizar.TextColor3 = Color3.new(1, 1, 1)
+btnAtualizar.Font = Enum.Font.GothamBold
+btnAtualizar.TextSize = 12
+btnAtualizar.Parent = main
+Instance.new("UICorner", btnAtualizar).CornerRadius = UDim.new(0, 6)
+
+-- Quadrado minimizado
+local mini = Instance.new("TextButton")
+mini.Size = UDim2.new(0, 38, 0, 38)
+mini.BackgroundColor3 = Color3.fromRGB(40, 110, 70)
+mini.BorderSizePixel = 0
+mini.Text = "L"
+mini.TextColor3 = Color3.new(1, 1, 1)
+mini.Font = Enum.Font.GothamBold
+mini.TextSize = 18
+mini.AutoButtonColor = false
+mini.Visible = false
+mini.Active = true
+mini.Parent = gui
+Instance.new("UICorner", mini).CornerRadius = UDim.new(0, 8)
+
+---------------------------------------------------------------------
+-- Arrastar (mouse e toque)
+---------------------------------------------------------------------
+local function arrastavel(handle, alvo, aoTocar)
+    local arrastando, inicio, posInicial, moveu = false, nil, nil, false
+    handle.InputBegan:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1
+            or i.UserInputType == Enum.UserInputType.Touch then
+            arrastando, moveu = true, false
+            inicio, posInicial = i.Position, alvo.Position
+            i.Changed:Connect(function()
+                if i.UserInputState == Enum.UserInputState.End then
+                    arrastando = false
+                    if aoTocar and not moveu then aoTocar() end
+                end
+            end)
+        end
+    end)
+    UIS.InputChanged:Connect(function(i)
+        if arrastando and (i.UserInputType == Enum.UserInputType.MouseMovement
+            or i.UserInputType == Enum.UserInputType.Touch) then
+            local d = i.Position - inicio
+            if d.Magnitude > 6 then moveu = true end
+            alvo.Position = UDim2.new(posInicial.X.Scale, posInicial.X.Offset + d.X,
+                posInicial.Y.Scale, posInicial.Y.Offset + d.Y)
+        end
+    end)
+end
+
+arrastavel(titulo, main)
+arrastavel(mini, mini, function()
+    main.Position = mini.Position
+    mini.Visible = false
+    main.Visible = true
+end)
+
+btnMin.MouseButton1Click:Connect(function()
+    mini.Position = main.Position
+    main.Visible = false
+    mini.Visible = true
+end)
+
+---------------------------------------------------------------------
+-- Montar lista
+---------------------------------------------------------------------
+local function limpar()
+    for _, c in ipairs(lista:GetChildren()) do
+        if c:IsA("Frame") then c:Destroy() end
+    end
+end
+
+local function atualizar()
+    limpar()
+    local achados = achar()
+    status.Text = (#achados > 0) and ("Encontrado: " .. #achados) or "Nao encontrado (chegue perto/Atualizar)"
+    for idx, p in ipairs(achados) do
+        local linha = Instance.new("Frame")
+        linha.Size = UDim2.new(1, 0, 0, 26)
+        linha.BackgroundTransparency = 1
+        linha.LayoutOrder = idx
+        linha.Parent = lista
+
+        local nome = (p.ObjectText ~= "" and p.ObjectText) or p.Parent.Name
+        local abrirBtn = Instance.new("TextButton")
+        abrirBtn.Size = UDim2.new(1, -52, 1, 0)
+        abrirBtn.BackgroundColor3 = Color3.fromRGB(40, 110, 70)
+        abrirBtn.BorderSizePixel = 0
+        abrirBtn.Text = "Abrir " .. nome
+        abrirBtn.TextColor3 = Color3.new(1, 1, 1)
+        abrirBtn.Font = Enum.Font.GothamBold
+        abrirBtn.TextSize = 11
+        abrirBtn.TextTruncate = Enum.TextTruncate.AtEnd
+        abrirBtn.Parent = linha
+        Instance.new("UICorner", abrirBtn).CornerRadius = UDim.new(0, 6)
+        abrirBtn.MouseButton1Click:Connect(function() abrir(p) end)
+
+        local irBtn = Instance.new("TextButton")
+        irBtn.Size = UDim2.new(0, 46, 1, 0)
+        irBtn.Position = UDim2.new(1, -46, 0, 0)
+        irBtn.BackgroundColor3 = Color3.fromRGB(55, 55, 70)
+        irBtn.BorderSizePixel = 0
+        irBtn.Text = "Ir"
+        irBtn.TextColor3 = Color3.new(1, 1, 1)
+        irBtn.Font = Enum.Font.GothamBold
+        irBtn.TextSize = 11
+        irBtn.Parent = linha
+        Instance.new("UICorner", irBtn).CornerRadius = UDim.new(0, 6)
+        irBtn.MouseButton1Click:Connect(function() irAte(p) end)
+    end
+end
+
+btnAtualizar.MouseButton1Click:Connect(atualizar)
+
+-- Atualiza sozinho quando aparecer um prompt novo (ex.: streaming do mapa)
+local pendente = false
+workspace.DescendantAdded:Connect(function(d)
+    if d:IsA("ProximityPrompt") and not pendente then
+        pendente = true
+        task.delay(0.5, function()
+            pendente = false
+            if gui.Parent then atualizar() end
+        end)
+    end
+end)
+
+atualizar()
